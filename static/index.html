@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>viochat</title>
+<style>
+  @font-face {
+    font-family: "Zpix";
+    src: url("/zpix.ttf") format("truetype");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+  }
+  body {
+    font-family: "Zpix", sans-serif;
+  }
+  html, body {
+    scrollbar-width: none;
+  }
+  html::-webkit-scrollbar, body::-webkit-scrollbar {
+    display: none;
+  }
+  input, button {
+    font: inherit;
+  }
+  dialog {
+    font: inherit;
+    background-color: #8ff3e2;
+  }
+ #form {
+  user-select: text;
+  position: fixed;
+  bottom: 5px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+}
+body {
+    background-color: #ef98ed;
+  }
+#messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 48px;
+}
+.message {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.self-message {
+  justify-content: flex-start;
+}
+.nickname {
+  flex: 0 0 auto;
+  font-weight: bold;
+}
+.message-text {
+  padding: 4px 8px;
+  border-radius: 4px;
+  background-color: #c9e5fe;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.self-message .message-text {
+  background-color: #63f830;
+}
+#input {
+  background-color: #8ff3e2;
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+}
+#top-controls {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 2;
+}
+#connected-count, #room-code-display {
+  max-width: 32vw;
+  padding: 6px;
+  border-radius: 4px;
+  background-color: #95f0e0;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+#create-room, #join-room, #change-nickname {
+  padding: 6px;
+  background-color: #63f830;
+}
+#send {
+   background-color: #63f830;
+}
+</style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p id="status" role="status">create or join a room to chat</p>
+      </header>
+      <div id="messages" aria-live="polite"></div>
+      <form id="form">
+        <input id="input" maxlength="4096" autocomplete="off" placeholder="say some bullshi" aria-label="Message" required>
+        <button id="send" type="submit" disabled>Send</button>
+      </form>
+    </main>
+    <div id="top-controls">
+      <span id="connected-count" aria-label="connected people" hidden></span>
+      <span id="room-code-display" aria-label="active room code" hidden></span>
+      <button id="create-room" type="button">make room</button>
+      <button id="join-room" type="button">join room</button>
+      <button id="change-nickname" type="button">change nickname</button>
+    </div>
+    <dialog id="nickname-dialog">
+      <form id="nickname-form">
+        <label for="nickname-input">choose display name</label>
+        <input id="nickname-input" maxlength="24" autocomplete="off" required>
+        <button type="submit">confirm</button>
+        <button id="cancel-nickname" type="button">cancel</button>
+      </form>
+    </dialog>
+    <dialog id="join-room-dialog">
+      <form id="join-room-form">
+        <label for="room-code-input">enter valid room code:</label>
+        <input id="room-code-input" maxlength="25" pattern="[A-Za-z0-9]{25}" autocomplete="off" required>
+        <button type="submit">join room</button>
+        <button id="cancel-join-room" type="button">cancel</button>
+      </form>
+    </dialog>
+    <script>
+      const status = document.querySelector("#status");
+      const messages = document.querySelector("#messages");
+      const form = document.querySelector("#form");
+      const input = document.querySelector("#input");
+      const send = document.querySelector("#send");
+      const createRoomButton = document.querySelector("#create-room");
+      const joinRoomButton = document.querySelector("#join-room");
+      const connectedCountDisplay = document.querySelector("#connected-count");
+      const roomCodeDisplay = document.querySelector("#room-code-display");
+      const joinRoomDialog = document.querySelector("#join-room-dialog");
+      const joinRoomForm = document.querySelector("#join-room-form");
+      const roomCodeInput = document.querySelector("#room-code-input");
+      const cancelJoinRoom = document.querySelector("#cancel-join-room");
+      const nicknameDialog = document.querySelector("#nickname-dialog");
+      const nicknameForm = document.querySelector("#nickname-form");
+      const nicknameInput = document.querySelector("#nickname-input");
+      const cancelNickname = document.querySelector("#cancel-nickname");
+      const changeNickname = document.querySelector("#change-nickname");
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      let socket = null;
+      let clientId = "";
+      let nickname = "";
+      let pendingMessage = "";
+
+      function connectToRoom(code) {
+        if (socket && socket.readyState < WebSocket.CLOSING) {
+          socket.close();
+        }
+        messages.replaceChildren();
+        connectedCountDisplay.hidden = true;
+        roomCodeDisplay.textContent = code;
+        roomCodeDisplay.hidden = false;
+        clientId = crypto.randomUUID();
+        status.textContent = `connecting to room ${code}`;
+        send.disabled = true;
+
+        const roomSocket = new WebSocket(
+          `${protocol}//${location.host}/ws/${encodeURIComponent(code)}`
+        );
+        socket = roomSocket;
+
+        roomSocket.addEventListener("open", () => {
+          if (socket !== roomSocket) return;
+          status.textContent = "connected";
+          send.disabled = false;
+          input.focus();
+        });
+
+        roomSocket.addEventListener("close", () => {
+          if (socket !== roomSocket) return;
+          status.textContent = "room unavailable or disconnected";
+          send.disabled = true;
+          connectedCountDisplay.hidden = true;
+        });
+
+        roomSocket.addEventListener("error", () => {
+          if (socket === roomSocket) {
+            status.textContent = "room connection failed";
+          }
+        });
+
+        roomSocket.addEventListener("message", event => {
+          if (socket !== roomSocket) return;
+          const rawMessage = String(event.data);
+          let data;
+          try {
+            data = JSON.parse(rawMessage);
+          } catch {
+            data = { nickname: "Anonymous", text: rawMessage, clientId: "" };
+          }
+          if (!data || typeof data !== "object" || Array.isArray(data)) {
+            data = { nickname: "Anonymous", text: rawMessage, clientId: "" };
+          }
+          if (data.type === "presence" && Number.isInteger(data.count) && data.count >= 0) {
+            connectedCountDisplay.textContent = `connected: ${data.count}`;
+            connectedCountDisplay.hidden = false;
+            return;
+          }
+
+          const wasNearBottom =
+            window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 80;
+          const message = document.createElement("div");
+          message.className = "message";
+          if (data.clientId === clientId) {
+            message.classList.add("self-message");
+          }
+
+          const sender = document.createElement("span");
+          sender.className = "nickname";
+          sender.textContent = typeof data.nickname === "string" && data.nickname
+            ? data.nickname
+            : "Anonymous";
+
+          const content = document.createElement("span");
+          content.className = "message-text";
+          content.textContent = typeof data.text === "string" ? data.text : "";
+
+          message.append(sender, content);
+          messages.append(message);
+          if (messages.childElementCount > 100) {
+            messages.firstElementChild.remove();
+          }
+          if (wasNearBottom) {
+            window.scrollTo({
+              top: document.documentElement.scrollHeight,
+              behavior: "smooth"
+            });
+          }
+        });
+      }
+
+      async function createRoom() {
+        createRoomButton.disabled = true;
+        try {
+          const response = await fetch("/rooms", { method: "POST" });
+          if (!response.ok) {
+            throw new Error(`room creation failed (${response.status}).`);
+          }
+          const code = await response.json();
+          if (typeof code !== "string" || !/^[A-Za-z0-9]{25}$/.test(code)) {
+            throw new Error("invalid room code");
+          }
+          connectToRoom(code);
+        } catch (error) {
+          status.textContent = error instanceof Error ? error.message : String(error);
+        } finally {
+          createRoomButton.disabled = false;
+        }
+      }
+
+      function sendMessage(text) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          status.textContent = "disconnected";
+          return false;
+        }
+        socket.send(JSON.stringify({ clientId, nickname, text }));
+        return true;
+      }
+
+      form.addEventListener("submit", event => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text || !socket || socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        if (!nickname) {
+          pendingMessage = text;
+          nicknameInput.value = "";
+          nicknameInput.setCustomValidity("");
+          nicknameDialog.showModal();
+          nicknameInput.focus();
+          return;
+        }
+
+        if (sendMessage(text)) {
+          input.value = "";
+          input.focus();
+        }
+      });
+
+      createRoomButton.addEventListener("click", createRoom);
+
+      joinRoomButton.addEventListener("click", () => {
+        roomCodeInput.value = "";
+        roomCodeInput.setCustomValidity("");
+        joinRoomDialog.showModal();
+        roomCodeInput.focus();
+      });
+
+      joinRoomForm.addEventListener("submit", event => {
+        event.preventDefault();
+        const code = roomCodeInput.value.trim();
+        if (!/^[A-Za-z0-9]{25}$/.test(code)) {
+          roomCodeInput.setCustomValidity("enter valid room code");
+          roomCodeInput.reportValidity();
+          return;
+        }
+        roomCodeInput.setCustomValidity("");
+        joinRoomDialog.close();
+        connectToRoom(code);
+      });
+
+      roomCodeInput.addEventListener("input", () => {
+        roomCodeInput.setCustomValidity("");
+      });
+
+      cancelJoinRoom.addEventListener("click", () => {
+        joinRoomDialog.close();
+      });
+
+      nicknameForm.addEventListener("submit", event => {
+        event.preventDefault();
+        nickname = nicknameInput.value.trim().slice(0, 24);
+        if (!nickname) {
+          nicknameInput.setCustomValidity("nickname empty");
+          nicknameInput.reportValidity();
+          return;
+        }
+        nicknameInput.setCustomValidity("");
+        nicknameDialog.close();
+        nicknameInput.value = "";
+        const text = pendingMessage;
+        pendingMessage = "";
+        if (text && sendMessage(text)) {
+          input.value = "";
+        }
+        input.focus();
+      });
+
+      nicknameInput.addEventListener("input", () => {
+        nicknameInput.setCustomValidity("");
+      });
+
+      cancelNickname.addEventListener("click", () => {
+        pendingMessage = "";
+        nicknameDialog.close();
+        input.focus();
+      });
+
+      changeNickname.addEventListener("click", () => {
+        nicknameInput.value = nickname;
+        nicknameInput.setCustomValidity("");
+        nicknameDialog.showModal();
+        nicknameInput.focus();
+      });
+    </script>
+  </body>
+</html>
